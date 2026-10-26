@@ -1,4 +1,4 @@
-# Busway.com
+# Buswayaz.com
 Repository to help with the Tempe Union Bus System.
 
 ## Pages
