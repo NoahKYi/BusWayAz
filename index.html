@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Busway · Find Your Route</title>
+
+    <link rel="icon" href="assets/busway-logo.png">
+
+    <meta name="mapbox-access-token"
+          content="pk.eyJ1Ijoibm9haDEwMSIsImEiOiJjbXZqMDZ4MHowYnI2MnhvdmoyczZvenEwIn0.DLUJBowla0lQQa5LOm9dgQ">
+
+    <link rel="stylesheet" href="css/style.css">
+    <link href="https://api.mapbox.com/mapbox-gl-js/v3.14.0/mapbox-gl.css"
+          rel="stylesheet">
+
+    <script type="module" src="js/core/i18n.js"></script>
+    <script type="module" src="js/map/main.js"></script>
+</head>
+
+<body>
+    <div id="file-warning" class="file-warning" hidden>
+        <strong>This page needs a web server.</strong>
+        <span>
+            Opening it straight from the folder blocks the sign-in code from
+            loading, so the page stays blank. Run
+            <code>python -m http.server 8000</code> in this folder (or use the
+            VS Code Live Server extension), then open
+            <code>http://localhost:8000/index.html</code>.
+        </span>
+    </div>
+
+    <script>
+        // Classic script on purpose: the module scripts below are exactly what
+        // the file:// protocol refuses to load.
+        if (location.protocol === "file:") {
+            document.getElementById("file-warning").hidden = false;
+        }
+    </script>
+
+    <main id="app-view" hidden>
+        <header class="app-header">
+            <h1>
+                <img class="app-logo" src="assets/busway-logo.png"
+                     alt="Busway" width="540" height="270">
+            </h1>
+
+            <details id="account-menu" class="account account-menu">
+                <summary aria-label="Account">
+                    <span id="account-email" class="account-email"></span>
+                    <span id="account-role" class="account-role" hidden></span>
+                </summary>
+                <div class="account-panel">
+                    <button id="manage-parents" type="button" hidden>Parent access</button>
+                    <button id="manage-drivers" type="button" hidden>Bus drivers</button>
+                    <label id="demo-role-wrap" class="demo-role" hidden>
+                        Demo: view as
+                        <select id="demo-role">
+                            <option value="student">Student</option>
+                            <option value="parent">Parent</option>
+                            <option value="driver">Bus driver</option>
+                            <option value="">My real role</option>
+                        </select>
+                    </label>
+                    <button id="sign-out" type="button">Sign out</button>
+                </div>
+            </details>
+        </header>
+
+        <div class="app-layout">
+            <div id="sidebar" class="search-panel">
+                <button id="sheet-toggle" class="sheet-toggle" type="button"
+                        aria-controls="sidebar" aria-expanded="true"
+                        aria-label="Hide panel"></button>
+
+                <form id="address-form">
+                    <div class="address-autocomplete">
+                        <div class="search">
+                            <label class="visually-hidden" for="address">Address</label>
+                            <svg class="search-icon" aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+                                <path d="M12 3 2.5 11h2.7v9h5.2v-5.8h3.2V20h5.2v-9h2.7L12 3z"></path>
+                            </svg>
+                            <input
+                                class="search-input"
+                                type="text"
+                                name="address"
+                                id="address"
+                                placeholder="Enter your address"
+                                autocomplete="off"
+                                role="combobox"
+                                aria-autocomplete="list"
+                                aria-expanded="false"
+                                aria-controls="address-suggestions"
+                                required
+                            >
+                            <button class="search-submit" type="submit" aria-label="Search address">
+                                <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false">
+                                    <circle cx="10.8" cy="10.8" r="6.3"></circle>
+                                    <path d="m15.5 15.5 5 5"></path>
+                                </svg>
+                            </button>
+                        </div>
+                        <ul id="address-suggestions" class="address-suggestions"
+                            role="listbox" aria-label="Address suggestions" hidden></ul>
+                    </div>
+                </form>
+
+                <section id="stop-status-panel" class="driver-panel" hidden>
+                    <h2>Bus status by stop</h2>
+
+                    <div class="school-select-wrap">
+                        <label for="stop-status-school">School</label>
+                        <select id="stop-status-school"></select>
+                    </div>
+
+                    <div class="school-select-wrap">
+                        <label for="stop-status-route">Route</label>
+                        <select id="stop-status-route" disabled></select>
+                    </div>
+
+                    <div id="stop-status-list" class="stop-status-list"></div>
+                    <p id="stop-status-message" class="stop-legend-hint"
+                       role="status" aria-live="polite"></p>
+                    <p class="stop-legend-hint">
+                        Choose On time or Late for each stop. Everyone can see
+                        the saved status in that stop’s map card.
+                    </p>
+                </section>
+
+                <div class="school-select-wrap">
+                    <label for="school-select">Your school</label>
+                    <select id="school-select" name="school">
+                        <option value="">Select your school</option>
+                    </select>
+                </div>
+
+                <p id="map-status" class="map-status" role="status" aria-live="polite"></p>
+
+                <section class="stop-legend">
+                    <h2>Bus stops by school</h2>
+                    <div id="school-filters" class="school-filters"></div>
+                    <p class="stop-legend-hint">
+                        Enter your address and choose a school to pin its nearest
+                        bus stop. Hover over or tap any dot for routes, times and
+                        directions.
+                    </p>
+                </section>
+            </div>
+
+            <div class="map-container">
+                <div class="map-controls">
+                    <button
+                        id="map-view-toggle"
+                        class="map-view-switch"
+                        type="button"
+                        aria-label="Switch to 3D"
+                        aria-pressed="false"
+                        disabled
+                    >
+                        <span class="switch-track" aria-hidden="true">
+                            <span class="switch-thumb"></span>
+                            <span class="switch-option switch-option-2d">2D</span>
+                            <span class="switch-option switch-option-3d">3D</span>
+                        </span>
+                    </button>
+
+                    <button id="map-recenter" class="map-recenter" type="button" disabled>
+                        Show all stops
+                    </button>
+                </div>
+
+                <div id="map-loading" class="map-loading">
+                    <p id="map-loading-text">Loading the map…</p>
+                </div>
+
+                <div id="map" aria-label="Interactive map of Phoenix, Arizona"></div>
+            </div>
+        </div>
+    </main>
+
+    <dialog id="parents-dialog" class="parents-dialog">
+        <div class="dialog-header">
+            <h2 id="parents-title">Parent access</h2>
+            <button id="parents-close" class="dialog-close" type="button" aria-label="Close">&times;</button>
+        </div>
+
+        <p id="parents-hint" class="dialog-hint">
+            Parents do not have a school email, so add them here. They get an
+            invite email with a sign-in link, and once they open it they can set
+            a password and sign in whenever they like.
+        </p>
+
+        <form id="parent-form" class="parent-form">
+            <label class="visually-hidden" for="parent-email">Parent email</label>
+            <input
+                id="parent-email"
+                name="parentEmail"
+                type="email"
+                placeholder="parent@example.com"
+                autocomplete="email"
+                required
+            >
+            <button type="submit">Send invite</button>
+        </form>
+
+        <p id="parent-status" class="dialog-status" role="status" aria-live="polite"></p>
+
+        <ul id="parent-list" class="parent-list"></ul>
+    </dialog>
+
+    <dialog id="drivers-dialog" class="parents-dialog">
+        <div class="dialog-header">
+            <h2>Bus drivers</h2>
+            <button id="drivers-close" class="dialog-close" type="button" aria-label="Close">&times;</button>
+        </div>
+
+        <p class="dialog-hint">
+            Add a driver's email to let that account share its bus location on
+            the map. Remove it to take that away.
+        </p>
+
+        <form id="driver-form" class="parent-form">
+            <label class="visually-hidden" for="driver-email">Driver email</label>
+            <input
+                id="driver-email"
+                name="driverEmail"
+                type="email"
+                placeholder="driver@example.com"
+                autocomplete="off"
+                required
+            >
+            <button type="submit">Add driver</button>
+        </form>
+
+        <p id="driver-list-status" class="dialog-status" role="status" aria-live="polite"></p>
+
+        <ul id="driver-list" class="parent-list"></ul>
+    </dialog>
+
+    <footer class="site-footer">
+        <nav aria-label="Site information">
+            <label class="language-picker" for="language-select">Language
+                <select id="language-select" aria-label="Language">
+                    <option value="en">English</option>
+                    <option value="zh-CN">简体中文</option>
+                    <option value="es">Español</option>
+                </select>
+            </label>
+            <a href="site-info.html#privacy" target="_blank" rel="noopener">Privacy Policy</a>
+            <a href="site-info.html#terms" target="_blank" rel="noopener">Terms of Use</a>
+            <a href="site-info.html#accessibility" target="_blank" rel="noopener">Accessibility</a>
+            <a href="mailto:yinoah8@gmail.com">Contact</a>
+            <a href="https://www.tempeunion.org/" target="_blank" rel="noopener noreferrer">District website</a>
+            <a href="site-info.html#help" target="_blank" rel="noopener">Help / FAQ</a>
+        </nav>
+    </footer>
+</body>
+</html>

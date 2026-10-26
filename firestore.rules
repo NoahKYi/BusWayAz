@@ -1,0 +1,173 @@
+rules_version = '2';
+
+// Publish from the Firebase Console (Firestore -> Rules -> Publish), or with
+// firebase deploy --only firestore:rules
+//
+// parentInvites holds one document per student/parent pair, with the id
+// "<studentUid>__<parent email>". The document is the parent's permanent key to
+// the site: as long as it exists the parent may sign in, and the student who
+// created it or an admin with the trusted `admin: true` claim can revoke it.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null && request.auth.token.email != null;
+    }
+
+    function isAdmin() {
+      return signedIn() && request.auth.token.admin == true;
+    }
+
+    function callerEmail() {
+      return request.auth.token.email.lower();
+    }
+
+    // ---------------------------------------------------------------
+    // TEMPORARY DEMO MODE - turn off after judging
+    // Keep in step with demoMode in js/core/auth.js. While true, anyone may
+    // pick their own role in demoRoles/<uid>, and an account that picked
+    // "driver" may share a bus location without a verified email or a
+    // busDrivers documents
+    // ---------------------------------------------------------------
+    function demoMode() {
+      return true;
+    }
+
+    function demoRole() {
+      return exists(/databases/$(database)/documents/demoRoles/$(request.auth.uid))
+        ? get(/databases/$(database)/documents/demoRoles/$(request.auth.uid)).data.role
+        : null;
+    }
+
+    match /demoRoles/{uid} {
+      allow get, delete: if signedIn() && request.auth.uid == uid;
+      allow create, update: if demoMode() && signedIn() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['role'])
+        && request.resource.data.role in ['student', 'parent', 'driver'];
+    }
+
+    match /parentInvites/{inviteId} {
+
+      function mine() {
+        return request.auth.uid == resource.data.studentUid
+          || callerEmail() == resource.data.parentEmail;
+      }
+
+      // Uncomment and keep in step with schoolEmailDomains in auth.js once the
+      // district domain list is confirmed, so only students can invite parents.
+      // function isSchoolEmail() {
+      //   return callerEmail().matches('.*@tuhsd[.]k12[.]az[.]us');
+      // }
+
+      // `resource` is null when the document does not exist yet. A student
+      // checking whether they already invited someone hits exactly that case,
+      // so denying it breaks adding a parent before the create rule is ever
+      // reached. Do not fold this back into a single `allow read`.
+      allow get: if signedIn() && (resource == null || isAdmin() || mine());
+
+      // Students and parents see their own invites; admins can view them all.
+      allow list: if signedIn() && (isAdmin() || mine());
+
+      // ---------------------------------------------------------------
+      // TEMPORARY (added 2026-10-25) - REVERT THIS
+      // `&& request.auth.token.email_verified == true` was removed from the
+      // create rule below while the project's Firebase email quota was spent
+      // and no verification mail could be delivered.
+      // ---------------------------------------------------------------
+      allow create: if signedIn()
+        // && isSchoolEmail()
+        && inviteId == request.auth.uid + '__' + request.resource.data.parentEmail
+        && request.resource.data.studentUid == request.auth.uid
+        && request.resource.data.studentEmail == callerEmail()
+        && request.resource.data.parentEmail is string
+        && request.resource.data.parentEmail == request.resource.data.parentEmail.lower()
+        && request.resource.data.parentEmail != callerEmail()
+        && request.resource.data.status == 'pending';
+
+      // only the student who invited the parent can take the access away
+      allow delete: if signedIn()
+        && (isAdmin() || request.auth.uid == resource.data.studentUid);
+
+      // the invited parent marks their own invite as used on first sign-in and
+      // may not touch anything else about it
+      allow update: if signedIn()
+        && callerEmail() == resource.data.parentEmail
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['status', 'parentUid', 'acceptedAt'])
+        && request.resource.data.status == 'active'
+        && request.resource.data.parentUid == request.auth.uid;
+    }
+
+    // busDrivers holds one document per bus driver, with the driver's
+    // lowercased email as the id. It is what makes an account a driver, so
+    // only an admin may add or remove one; a driver may read only their own.
+    match /busDrivers/{email} {
+      allow get: if signedIn() && (isAdmin() || callerEmail() == email);
+      allow list, delete: if isAdmin();
+      allow create, update: if isAdmin()
+        && email == email.lower()
+        && request.resource.data.keys().hasOnly(['email', 'addedBy', 'addedAt'])
+        && request.resource.data.email == email;
+    }
+
+    // busLocations holds one document per driver currently sharing, with the
+    // driver's uid as the id. Everyone signed in can watch the buses; only a
+    // verified driver writes their own, and it carries no email or name.
+    match /busLocations/{driverUid} {
+      function isDriver() {
+        return signedIn() && (
+          (request.auth.token.email_verified == true
+            && exists(/databases/$(database)/documents/busDrivers/$(callerEmail())))
+          || (demoMode() && demoRole() == 'driver')
+        );
+      }
+
+      function validLocation() {
+        let data = request.resource.data;
+        return data.keys().hasOnly(['driverUid', 'school', 'route', 'lng', 'lat', 'heading', 'updatedAt'])
+          && data.driverUid == request.auth.uid
+          && data.school in ['Corona del Sol', 'Desert Vista', 'Marcos de Niza',
+                             'McClintock', 'Mountain Pointe', 'Tempe High']
+          && data.route is string && data.route.size() > 0 && data.route.size() <= 40
+          // roughly Arizona, like arizonaBounds in main.js
+          && data.lng is number && data.lng >= -115 && data.lng <= -109
+          && data.lat is number && data.lat >= 31 && data.lat <= 37.1
+          && (data.heading == null || data.heading is number)
+          && data.updatedAt == request.time;
+      }
+
+      allow read: if signedIn();
+      allow create, update: if isDriver() && driverUid == request.auth.uid && validLocation();
+      allow delete: if signedIn() && (request.auth.uid == driverUid || isAdmin());
+    }
+
+    match /busStopStatuses/{statusId} {
+      function canManageStatuses() {
+        return isAdmin() || (signedIn() && (
+          (request.auth.token.email_verified == true
+            && exists(/databases/$(database)/documents/busDrivers/$(callerEmail())))
+          || (demoMode() && demoRole() == 'driver')
+        ));
+      }
+
+      function validStatus() {
+        let data = request.resource.data;
+        return data.keys().hasOnly(['school', 'route', 'stopName', 'status', 'updatedAt'])
+          && data.school in ['Corona del Sol', 'Desert Vista', 'Marcos de Niza',
+                             'McClintock', 'Mountain Pointe', 'Tempe High']
+          && data.route is string && data.route.size() > 0 && data.route.size() <= 40
+          && data.stopName is string && data.stopName.size() > 0 && data.stopName.size() <= 160
+          && data.status in ['on-time', 'late']
+          && data.updatedAt == request.time;
+      }
+
+      allow read: if signedIn();
+      allow create, update: if canManageStatuses() && validStatus();
+      allow delete: if canManageStatuses();
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
